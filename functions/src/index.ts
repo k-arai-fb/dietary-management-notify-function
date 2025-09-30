@@ -53,15 +53,27 @@ const db = getFirestore();
 const messaging = getMessaging();
 
 
-// エミュレータ上での実行かどうかをチェック
-const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST || "localhost:8080";
-if (process.env.FUNCTIONS_EMULATOR === "true" || !!process.env.FIRESTORE_EMULATOR_HOST) {
+const resolveEmulatorHost = (): string => process.env.FIRESTORE_EMULATOR_HOST || "localhost:8080";
+let appliedFirestoreHost: string | null = null;
+
+const ensureFirestoreTarget = (): void => {
+  const shouldUseEmulator = process.env.FUNCTIONS_EMULATOR === "true" || !!process.env.FIRESTORE_EMULATOR_HOST;
+  if (!shouldUseEmulator) {
+    return;
+  }
+
+  const host = resolveEmulatorHost();
+  if (appliedFirestoreHost === host) {
+    return;
+  }
+
   db.settings({
-    host: emulatorHost,
+    host,
     ssl: false,
   });
-  process.env.FIRESTORE_EMULATOR_HOST = emulatorHost;
-}
+  process.env.FIRESTORE_EMULATOR_HOST = host;
+  appliedFirestoreHost = host;
+};
 
 // iOSのローカル通知仕様に合わせたプッシュペイロード用定数
 const TIME_ZONE = "Asia/Tokyo";
@@ -70,9 +82,9 @@ const CATEGORY = "TASK_CATEGORY";
 const DEEPLINK_BASE = "dietary://meal";
 const CHUNK_SIZE = 500;
 // Cloud Functionsエミュレータ上で動作しているかどうかの判定
-const IS_FUNCTIONS_EMULATOR = process.env.FUNCTIONS_EMULATOR === "true";
+const isFunctionsEmulator = (): boolean => process.env.FUNCTIONS_EMULATOR === "true";
 // ローカルでも実機送信したい要件に合わせスキップ制御を環境変数に委譲
-const SHOULD_SKIP_FCM = process.env.SKIP_FCM_SEND === "true";
+const shouldSkipFcm = (): boolean => process.env.SKIP_FCM_SEND === "true";
 
 // 各リマインダーの配信時刻と文言
 const REMINDER_CONFIG: Record<MealSlot, ReminderConfig> = {
@@ -150,6 +162,7 @@ const chunkRecipients = (recipients: Recipient[]): Recipient[][] => {
 
 // 各cronトリガーと開発用スクリプトが利用する送信処理の本体
 export const sendMealReminder = async (slot: MealSlot): Promise<void> => {
+  ensureFirestoreTarget();
   // cron実行ログの出力
   const config = REMINDER_CONFIG[slot];
   logger.info("Meal reminder triggered", {slot, schedule: config.cron});
@@ -185,8 +198,8 @@ export const sendMealReminder = async (slot: MealSlot): Promise<void> => {
   for (const batch of chunkRecipients(recipients)) {
     // 最大500件ずつ送信
     const tokens = batch.map((recipient) => recipient.token);
-    if (SHOULD_SKIP_FCM) {
-      logger.info("環境設定によりFCM送信をスキップ", {slot, tokens, IS_FUNCTIONS_EMULATOR});
+    if (shouldSkipFcm()) {
+      logger.info("環境設定によりFCM送信をスキップ", {slot, tokens, IS_FUNCTIONS_EMULATOR: isFunctionsEmulator()});
       successCount += tokens.length;
       continue;
     }
